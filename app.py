@@ -190,6 +190,8 @@ DEFAULT_STATE = {
     "accent_color": "#E11D48",
     "text_color": "#FAFAFA",
     "show_footer_line": True,
+    "footer_line_width_pct": 100,
+    "footer_line_thickness": 4,
     "mobile_preview_top": False,
 }
 
@@ -259,6 +261,8 @@ def export_brand_kit_json() -> str:
         "accent_color",
         "text_color",
         "show_footer_line",
+        "footer_line_width_pct",
+        "footer_line_thickness",
     ]
     payload = {k: st.session_state[k] for k in kit_keys}
     return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -702,7 +706,19 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
 
     # 11. FOOTER
     if cfg["show_footer_line"]:
-        draw.line([(pad, footer_y - 24), (W - pad, footer_y - 24)], fill=cfg["accent_color"], width=4)
+        max_line_w = W - (2 * pad)
+        line_w = int(max_line_w * (cfg.get("footer_line_width_pct", 100) / 100.0))
+        thickness = max(1, int(cfg.get("footer_line_thickness", 4) * scale))
+
+        if h_align == "Centrato":
+            line_x1 = pad + (max_line_w - line_w) // 2
+        elif h_align == "Destra":
+            line_x1 = W - pad - line_w
+        else:
+            line_x1 = pad
+
+        line_y = footer_y - int(24 * scale)
+        draw.line([(line_x1, line_y), (line_x1 + line_w, line_y)], fill=cfg["accent_color"], width=thickness)
 
     if cfg["author"]:
         text_y = footer_y + (
@@ -844,7 +860,19 @@ def render_media_and_colors(t_media, t_colori):
         bg_color = c1.color_picker("Sfondo", key="bg_color")
         accent_color = c2.color_picker("Accento", key="accent_color")
         text_color = c3.color_picker("Testo", key="text_color")
+
         show_footer_line = st.checkbox("Mostra linea separatrice in basso", key="show_footer_line")
+        if show_footer_line:
+            fl1, fl2 = st.columns(2)
+            footer_line_width_pct = fl1.slider(
+                "Lunghezza linea (%)", 10, 100, step=5, key="footer_line_width_pct"
+            )
+            footer_line_thickness = fl2.slider(
+                "Spessore linea (px)", 1, 20, key="footer_line_thickness"
+            )
+        else:
+            footer_line_width_pct = st.session_state["footer_line_width_pct"]
+            footer_line_thickness = st.session_state["footer_line_thickness"]
 
         st.divider()
         st.markdown("**Brand Kit (JSON)**")
@@ -896,7 +924,8 @@ def render_media_and_colors(t_media, t_colori):
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
         subject_file, subject_size, subject_circle, subject_side_by_side,
         logo_file, logo_height, logo_position,
-        bg_color, accent_color, text_color, show_footer_line,
+        bg_color, accent_color, text_color,
+        show_footer_line, footer_line_width_pct, footer_line_thickness,
     )
 
 
@@ -1068,7 +1097,8 @@ with controls_container:
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
         subject_file, subject_size, subject_circle, subject_side_by_side,
         logo_file, logo_height, logo_position,
-        bg_color, accent_color, text_color, show_footer_line,
+        bg_color, accent_color, text_color,
+        show_footer_line, footer_line_width_pct, footer_line_thickness,
     ) = render_media_and_colors(t_media, t_colori)
 
 config = {
@@ -1111,6 +1141,8 @@ config = {
     "accent_color": accent_color,
     "text_color": text_color,
     "show_footer_line": show_footer_line,
+    "footer_line_width_pct": footer_line_width_pct,
+    "footer_line_thickness": footer_line_thickness,
 }
 
 with preview_container:
