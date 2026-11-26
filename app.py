@@ -172,8 +172,11 @@ DEFAULT_STATE = {
     "padding": 85,
     "line_spacing": 1.22,
     "bar_width": 22,
+    "horizontal_align": "Sinistra",
     "vertical_align": "Centrato",
+    "horizontal_offset": 0,
     "vertical_offset": 0,
+    "text_shadow": True,
     "logo_height": 95,
     "logo_position": "In basso a destra",
     "subject_size": 260,
@@ -238,8 +241,11 @@ def export_brand_kit_json() -> str:
         "padding",
         "line_spacing",
         "bar_width",
+        "horizontal_align",
         "vertical_align",
+        "horizontal_offset",
         "vertical_offset",
+        "text_shadow",
         "logo_height",
         "logo_position",
         "subject_size",
@@ -354,6 +360,21 @@ def fit_cover(
     return resized.crop((left, top, left + target_w, top + target_h))
 
 
+def draw_text_with_optional_shadow(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill: str,
+    shadow: bool = False,
+    shadow_offset: int = 3,
+):
+    x, y = xy
+    if shadow:
+        draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(0, 0, 0, 175))
+    draw.text((x, y), text, font=font, fill=fill)
+
+
 def measure_highlighted_text_height(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -398,6 +419,9 @@ def draw_highlighted_text(
     highlight_color: str,
     max_width: int,
     line_spacing: float = 1.2,
+    align: str = "Sinistra",
+    shadow: bool = False,
+    shadow_offset: int = 3,
 ) -> int:
     words = text.split()
     lines = []
@@ -409,22 +433,28 @@ def draw_highlighted_text(
         clean_w = w.replace("*", "")
         w_width = draw.textbbox((0, 0), clean_w, font=font)[2]
         if current_line and (current_w + space_w + w_width > max_width):
-            lines.append(current_line)
+            lines.append((current_line, current_w))
             current_line = [w]
             current_w = w_width
         else:
             current_line.append(w)
             current_w += (space_w if len(current_line) > 1 else 0) + w_width
     if current_line:
-        lines.append(current_line)
+        lines.append((current_line, current_w))
 
     bbox = draw.textbbox((0, 0), "Ag", font=font)
     line_h = int((bbox[3] - bbox[1]) * line_spacing)
 
     in_highlight = False
-    for line in lines:
-        cursor_x = x
-        for token in line:
+    for line_tokens, line_w in lines:
+        if align == "Centrato":
+            cursor_x = x + max(0, (max_width - line_w) // 2)
+        elif align == "Destra":
+            cursor_x = x + max(0, max_width - line_w)
+        else:
+            cursor_x = x
+
+        for token in line_tokens:
             starts = token.startswith("*")
             ends = token.endswith("*") and len(token) > 1
             if starts:
@@ -433,7 +463,15 @@ def draw_highlighted_text(
             clean_token = token.strip("*")
             color = highlight_color if in_highlight else base_color
 
-            draw.text((cursor_x, y), clean_token, font=font, fill=color)
+            draw_text_with_optional_shadow(
+                draw,
+                (cursor_x, y),
+                clean_token,
+                font=font,
+                fill=color,
+                shadow=shadow,
+                shadow_offset=shadow_offset,
+            )
             tok_w = draw.textbbox((0, 0), clean_token + " ", font=font)[2]
             cursor_x += tok_w
 
@@ -450,6 +488,9 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
 
     scale = W / 1080.0
     pad = int(cfg["padding"] * scale)
+    shadow_on = cfg.get("text_shadow", True)
+    shadow_off = max(2, int(3 * scale))
+    h_align = cfg.get("horizontal_align", "Sinistra")
 
     img = Image.new("RGBA", (W, H), cfg["bg_color"])
 
@@ -542,7 +583,7 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     f_sub = load_font(s_sub, bold=False)
     f_author = load_font(s_author, bold=True)
 
-    # 6. ALLINEAMENTO VERTICALE DEL BLOCCO TESTI
+    # 6. ALLINEAMENTO VERTICALE E ORIZZONTALE DEL BLOCCO TESTI
     footer_bottom_margin = int(H * 0.08) if is_tall else pad
     footer_y = H - footer_bottom_margin - max(
         s_author, logo_h_scaled if (logo_img and "basso" in cfg["logo_position"]) else 0
@@ -573,18 +614,47 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     elif v_align == "In basso" and block_h < available_h:
         y += available_h - block_h
 
-    # Spostamento fine manuale (scalato sulla risoluzione)
+    # Spostamenti fini manuali (liberi su tutta l'altezza e larghezza della card)
     y += int(cfg.get("vertical_offset", 0) * scale)
-    y = max(top_limit, y)
+    y = max(int(24 * scale), min(H - int(80 * scale), y))
+
+    base_x = pad + int(cfg.get("horizontal_offset", 0) * scale)
+
+    def aligned_single_line_x(line_text: str, font: ImageFont.FreeTypeFont, box_w: int) -> int:
+        tw = draw.textbbox((0, 0), line_text, font=font)[2]
+        if h_align == "Centrato":
+            return base_x + max(0, (box_w - tw) // 2)
+        elif h_align == "Destra":
+            return base_x + max(0, box_w - tw)
+        return base_x
 
     # 7. OCCHIELLO / KICKER
     if cfg["kicker"]:
-        draw.text((pad, y), cfg["kicker"].upper(), font=f_kicker, fill=cfg["accent_color"])
+        kicker_str = cfg["kicker"].upper()
+        kx = aligned_single_line_x(kicker_str, f_kicker, content_max_w)
+        draw_text_with_optional_shadow(
+            draw,
+            (kx, y),
+            kicker_str,
+            font=f_kicker,
+            fill=cfg["accent_color"],
+            shadow=shadow_on,
+            shadow_offset=shadow_off,
+        )
         y += int(s_kicker * 1.8)
 
     # 8. DATO GIGANTE
     if cfg["template"] == "Dato & Numeri" and cfg["big_number"]:
-        draw.text((pad, y), cfg["big_number"], font=f_number, fill=cfg["accent_color"])
+        nx = aligned_single_line_x(cfg["big_number"], f_number, content_max_w)
+        draw_text_with_optional_shadow(
+            draw,
+            (nx, y),
+            cfg["big_number"],
+            font=f_number,
+            fill=cfg["accent_color"],
+            shadow=shadow_on,
+            shadow_offset=shadow_off,
+        )
         y += int(s_number * 1.25)
 
     # 9. TITOLO PRINCIPALE
@@ -592,13 +662,16 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
         y = draw_highlighted_text(
             draw=draw,
             text=cfg["headline"],
-            x=pad,
+            x=base_x,
             y=y,
             font=f_head,
             base_color=cfg["text_color"],
             highlight_color=cfg["accent_color"],
             max_width=content_max_w,
             line_spacing=cfg["line_spacing"],
+            align=h_align,
+            shadow=shadow_on,
+            shadow_offset=shadow_off,
         )
         y += int(s_head * 0.5)
 
@@ -611,13 +684,16 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
         y = draw_highlighted_text(
             draw=draw,
             text=cfg["subtext"],
-            x=pad,
+            x=base_x,
             y=y,
             font=f_sub,
             base_color=cfg["text_color"],
             highlight_color=cfg["accent_color"],
             max_width=sub_max_w,
             line_spacing=1.3,
+            align=h_align,
+            shadow=shadow_on,
+            shadow_offset=shadow_off,
         )
 
     # 11. FOOTER
@@ -630,7 +706,15 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
             if (logo_img and "basso" in cfg["logo_position"])
             else 0
         )
-        draw.text((pad, text_y), cfg["author"], font=f_author, fill=cfg["text_color"])
+        draw_text_with_optional_shadow(
+            draw,
+            (pad, text_y),
+            cfg["author"],
+            font=f_author,
+            fill=cfg["text_color"],
+            shadow=shadow_on,
+            shadow_offset=shadow_off,
+        )
 
     if logo_img is not None and cfg["logo_position"].startswith("In basso"):
         lx = (W - pad - logo_img.width) if "destra" in cfg["logo_position"] else pad
@@ -946,19 +1030,35 @@ with controls_container:
         line_spacing = s2.slider("Interlinea", 1.0, 1.6, step=0.02, key="line_spacing")
         bar_width = s3.slider("Bordo (px)", 0, 60, key="bar_width")
 
+        st.markdown("**Posizione & Leggibilità Testo**")
         va1, va2 = st.columns(2)
-        vertical_align = va1.selectbox(
-            "Allineamento verticale testo",
+        horizontal_align = va1.selectbox(
+            "Allineamento orizzontale",
+            ["Sinistra", "Centrato", "Destra"],
+            key="horizontal_align",
+        )
+        vertical_align = va2.selectbox(
+            "Allineamento verticale",
             ["Centrato", "In alto", "In basso"],
             key="vertical_align",
         )
-        vertical_offset = va2.slider(
-            "Spostamento fine (px)",
-            min_value=-250,
-            max_value=250,
+
+        off1, off2 = st.columns(2)
+        horizontal_offset = off1.slider(
+            "Sposta orizzontale (px)",
+            min_value=-350,
+            max_value=350,
             step=5,
+            key="horizontal_offset",
+        )
+        vertical_offset = off2.slider(
+            "Sposta verticale (px)",
+            min_value=-650,
+            max_value=650,
+            step=10,
             key="vertical_offset",
         )
+        text_shadow = st.checkbox("Ombra sotto i testi (migliora leggibilità su foto)", key="text_shadow")
 
     (
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
@@ -984,8 +1084,11 @@ config = {
     "padding": padding,
     "line_spacing": line_spacing,
     "bar_width": bar_width,
+    "horizontal_align": horizontal_align,
     "vertical_align": vertical_align,
+    "horizontal_offset": horizontal_offset,
     "vertical_offset": vertical_offset,
+    "text_shadow": text_shadow,
     "bg_image": bg_image,
     "overlay_opacity": overlay_opacity,
     "bg_contrast": bg_contrast,
