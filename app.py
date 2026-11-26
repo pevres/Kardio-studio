@@ -85,6 +85,17 @@ st.markdown(
         border-radius: 8px !important;
     }
 
+    /* Riquadro File Uploader ottimizzato per tocco su mobile */
+    [data-testid="stFileUploader"] section {
+        padding: 0.85rem !important;
+        min-height: 64px !important;
+    }
+    [data-testid="stFileUploader"] button {
+        min-height: 42px !important;
+        padding: 0.4rem 1rem !important;
+        width: 100% !important;
+    }
+
     /* Anteprima contenuta così si vede tutta la card (incluso il footer) senza scroll */
     [data-testid="stImage"] img {
         max-height: 60vh;
@@ -161,6 +172,8 @@ DEFAULT_STATE = {
     "padding": 85,
     "line_spacing": 1.22,
     "bar_width": 22,
+    "vertical_align": "Centrato",
+    "vertical_offset": 0,
     "logo_height": 95,
     "logo_position": "In basso a destra",
     "subject_size": 260,
@@ -189,11 +202,23 @@ def handle_restore_kit():
     if uploaded_kit is not None:
         try:
             uploaded_kit.seek(0)
-            kit_data = json.load(uploaded_kit)
+            raw_bytes = uploaded_kit.read()
+            kit_data = json.loads(raw_bytes.decode("utf-8-sig"))
             apply_brand_kit(kit_data)
-            st.session_state["kit_status"] = ("success", "Brand Kit ripristinato correttamente.")
+            st.session_state["kit_status"] = ("success", "Brand Kit ripristinato dal file.")
         except Exception as e:
             st.session_state["kit_status"] = ("error", f"File JSON non valido: {e}")
+
+
+def handle_restore_kit_text():
+    raw_json = st.session_state.get("kit_text_input", "").strip()
+    if raw_json:
+        try:
+            kit_data = json.loads(raw_json)
+            apply_brand_kit(kit_data)
+            st.session_state["kit_status"] = ("success", "Brand Kit ripristinato dal testo JSON.")
+        except Exception as e:
+            st.session_state["kit_status"] = ("error", f"Testo JSON non valido: {e}")
 
 
 def handle_apply_palette(bg_p: str, acc_p: str, txt_p: str):
@@ -213,6 +238,8 @@ def export_brand_kit_json() -> str:
         "padding",
         "line_spacing",
         "bar_width",
+        "vertical_align",
+        "vertical_offset",
         "logo_height",
         "logo_position",
         "subject_size",
@@ -288,6 +315,19 @@ def load_font(size: int, bold: bool = False):
 # ==========================================
 # MOTORE GRAFICO PILLOW
 # ==========================================
+def open_uploaded_image(uploaded_file) -> Image.Image | None:
+    """Apre in sicurezza un'immagine caricata da mobile/desktop correggendo l'orientamento EXIF."""
+    if uploaded_file is None:
+        return None
+    try:
+        uploaded_file.seek(0)
+        img = Image.open(uploaded_file)
+        img = ImageOps.exif_transpose(img)
+        return img.convert("RGBA")
+    except Exception:
+        return None
+
+
 def hex_to_rgb(hex_color: str):
     h = hex_color.lstrip("#")
     return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
@@ -312,6 +352,40 @@ def fit_cover(
     left = int(max_left * offset_x)
     top = int(max_top * offset_y)
     return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def measure_highlighted_text_height(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+    line_spacing: float = 1.2,
+) -> int:
+    """Calcola l'altezza verticale complessiva del testo wrappato."""
+    if not text:
+        return 0
+    words = text.split()
+    lines = 0
+    current_line = []
+    current_w = 0
+    space_w = draw.textbbox((0, 0), " ", font=font)[2]
+
+    for w in words:
+        clean_w = w.replace("*", "")
+        w_width = draw.textbbox((0, 0), clean_w, font=font)[2]
+        if current_line and (current_w + space_w + w_width > max_width):
+            lines += 1
+            current_line = [w]
+            current_w = w_width
+        else:
+            current_line.append(w)
+            current_w += (space_w if len(current_line) > 1 else 0) + w_width
+    if current_line:
+        lines += 1
+
+    bbox = draw.textbbox((0, 0), "Ag", font=font)
+    line_h = int((bbox[3] - bbox[1]) * line_spacing)
+    return lines * line_h
 
 
 def draw_highlighted_text(
@@ -380,9 +454,8 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     img = Image.new("RGBA", (W, H), cfg["bg_color"])
 
     # 1. IMMAGINE DI SFONDO
-    if cfg["bg_image"] is not None:
-        cfg["bg_image"].seek(0)
-        bg = Image.open(cfg["bg_image"]).convert("RGBA")
+    bg = open_uploaded_image(cfg["bg_image"])
+    if bg is not None:
         if cfg["bg_grayscale"]:
             gray = ImageOps.grayscale(bg)
             bg = Image.merge("RGBA", (gray, gray, gray, bg.split()[3]))
@@ -411,27 +484,27 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     # 3. LOGO
     logo_img = None
     logo_h_scaled = int(cfg["logo_height"] * scale)
-    if cfg["logo_file"] is not None:
-        cfg["logo_file"].seek(0)
-        raw_logo = Image.open(cfg["logo_file"]).convert("RGBA")
+    raw_logo = open_uploaded_image(cfg["logo_file"])
+    if raw_logo is not None:
         target_w = int(raw_logo.width * (logo_h_scaled / raw_logo.height))
         logo_img = raw_logo.resize((target_w, logo_h_scaled), Image.Resampling.LANCZOS)
 
     is_tall = (H / W) >= 1.5
-    y = int(H * 0.14) if is_tall else pad
+    top_limit = int(H * 0.14) if is_tall else pad
 
     if logo_img is not None and cfg["logo_position"].startswith("In alto"):
         top_logo_y = pad
         lx = pad if "sinistra" in cfg["logo_position"] else (W - pad - logo_img.width)
         img.paste(logo_img, (lx, top_logo_y), logo_img)
-        y = max(y, top_logo_y + logo_img.height + int(pad * 0.45))
+        top_limit = max(top_limit, top_logo_y + logo_img.height + int(pad * 0.45))
+
+    y = top_limit
 
     # 4. FOTO SOGGETTO / RITRATTO
     content_max_w = W - (2 * pad)
     subject_box = None
-    if cfg["subject_file"] is not None:
-        cfg["subject_file"].seek(0)
-        subj = Image.open(cfg["subject_file"]).convert("RGBA")
+    subj = open_uploaded_image(cfg["subject_file"])
+    if subj is not None:
         sw = int(cfg["subject_size"] * scale)
         sh = int(subj.height * (sw / subj.width))
         subj = subj.resize((sw, sh), Image.Resampling.LANCZOS)
@@ -469,17 +542,52 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     f_sub = load_font(s_sub, bold=False)
     f_author = load_font(s_author, bold=True)
 
-    # 6. OCCHIELLO / KICKER
+    # 6. ALLINEAMENTO VERTICALE DEL BLOCCO TESTI
+    footer_bottom_margin = int(H * 0.08) if is_tall else pad
+    footer_y = H - footer_bottom_margin - max(
+        s_author, logo_h_scaled if (logo_img and "basso" in cfg["logo_position"]) else 0
+    )
+    bottom_limit = footer_y - (48 if cfg["show_footer_line"] else 24)
+
+    block_h = 0
+    if cfg["kicker"]:
+        block_h += int(s_kicker * 1.8)
+    if cfg["template"] == "Dato & Numeri" and cfg["big_number"]:
+        block_h += int(s_number * 1.25)
+    if cfg["headline"]:
+        block_h += measure_highlighted_text_height(
+            draw, cfg["headline"], f_head, content_max_w, cfg["line_spacing"]
+        ) + int(s_head * 0.5)
+    if cfg["subtext"]:
+        sub_w_est = (
+            content_max_w
+            if (subject_box and cfg["subject_side_by_side"] and not is_tall)
+            else (W - 2 * pad)
+        )
+        block_h += measure_highlighted_text_height(draw, cfg["subtext"], f_sub, sub_w_est, 1.3)
+
+    v_align = cfg.get("vertical_align", "Centrato")
+    available_h = max(0, bottom_limit - y)
+    if v_align == "Centrato" and block_h < available_h:
+        y += (available_h - block_h) // 2
+    elif v_align == "In basso" and block_h < available_h:
+        y += available_h - block_h
+
+    # Spostamento fine manuale (scalato sulla risoluzione)
+    y += int(cfg.get("vertical_offset", 0) * scale)
+    y = max(top_limit, y)
+
+    # 7. OCCHIELLO / KICKER
     if cfg["kicker"]:
         draw.text((pad, y), cfg["kicker"].upper(), font=f_kicker, fill=cfg["accent_color"])
         y += int(s_kicker * 1.8)
 
-    # 7. DATO GIGANTE
+    # 8. DATO GIGANTE
     if cfg["template"] == "Dato & Numeri" and cfg["big_number"]:
         draw.text((pad, y), cfg["big_number"], font=f_number, fill=cfg["accent_color"])
         y += int(s_number * 1.25)
 
-    # 8. TITOLO PRINCIPALE
+    # 9. TITOLO PRINCIPALE
     if cfg["headline"]:
         y = draw_highlighted_text(
             draw=draw,
@@ -494,7 +602,7 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
         )
         y += int(s_head * 0.5)
 
-    # 9. SOTTOTITOLO
+    # 10. SOTTOTITOLO
     if cfg["subtext"]:
         sub_max_w = W - (2 * pad)
         if subject_box and cfg["subject_side_by_side"] and not is_tall and y < subject_box[3]:
@@ -512,11 +620,7 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
             line_spacing=1.3,
         )
 
-    # 10. FOOTER
-    footer_bottom_margin = int(H * 0.08) if is_tall else pad
-    footer_y = H - footer_bottom_margin - max(
-        s_author, logo_h_scaled if (logo_img and "basso" in cfg["logo_position"]) else 0
-    )
+    # 11. FOOTER
     if cfg["show_footer_line"]:
         draw.line([(pad, footer_y - 24), (W - pad, footer_y - 24)], fill=cfg["accent_color"], width=4)
 
@@ -573,8 +677,10 @@ def auto_extract_from_press_release(raw_text: str):
 def render_media_and_colors(t_media, t_colori):
     with t_media:
         st.markdown("**1. Immagine di sfondo (piena pagina)**")
-        bg_image = st.file_uploader("Carica sfondo", type=["png", "jpg", "jpeg", "webp"], key="bg_up")
+        bg_image = st.file_uploader("Carica sfondo (JPG, PNG, WEBP)", key="bg_up")
         if bg_image is not None:
+            if open_uploaded_image(bg_image) is None:
+                st.error("Formato immagine non supportato. Usa JPG, PNG o WEBP.")
             m1, m2, m3 = st.columns(3)
             overlay_opacity = m1.slider("Oscuramento", 0.0, 0.95, 0.75)
             bg_contrast = m2.slider("Contrasto", 0.5, 2.0, 1.1)
@@ -590,8 +696,10 @@ def render_media_and_colors(t_media, t_colori):
 
         st.divider()
         st.markdown("**2. Foto Soggetto / Ritratto**")
-        subject_file = st.file_uploader("Carica ritratto o oggetto", type=["png", "jpg", "jpeg", "webp"], key="subj_up")
+        subject_file = st.file_uploader("Carica ritratto o oggetto", key="subj_up")
         if subject_file is not None:
+            if open_uploaded_image(subject_file) is None:
+                st.error("Formato immagine non supportato. Usa JPG, PNG o WEBP.")
             sb1, sb2, sb3 = st.columns(3)
             subject_size = sb1.slider("Dimensione (px)", 120, 600, key="subject_size")
             subject_circle = sb2.checkbox("Ritaglio circolare", key="subject_circle")
@@ -603,8 +711,10 @@ def render_media_and_colors(t_media, t_colori):
 
         st.divider()
         st.markdown("**3. Logo / Marchio**")
-        logo_file = st.file_uploader("Carica Logo (PNG trasparente)", type=["png", "webp"], key="logo_up")
+        logo_file = st.file_uploader("Carica Logo (PNG trasparente)", key="logo_up")
         if logo_file is not None:
+            if open_uploaded_image(logo_file) is None:
+                st.error("Formato logo non supportato. Usa PNG o WEBP.")
             lg1, lg2 = st.columns(2)
             logo_height = lg1.slider("Altezza Logo (px)", 40, 260, key="logo_height")
             logo_position = lg2.selectbox(
@@ -650,27 +760,41 @@ def render_media_and_colors(t_media, t_colori):
 
         st.divider()
         st.markdown("**Brand Kit (JSON)**")
-        bk1, bk2 = st.columns(2)
-        bk1.download_button(
+        kit_json_str = export_brand_kit_json()
+
+        st.download_button(
             label="Scarica Brand Kit (.json)",
-            data=export_brand_kit_json(),
+            data=kit_json_str,
             file_name="kardio_brand_kit.json",
             mime="application/json",
             use_container_width=True,
         )
 
-        uploaded_kit = bk2.file_uploader(
-            "Carica Brand Kit (.json)",
-            type=["json"],
+        uploaded_kit = st.file_uploader(
+            "Carica file Brand Kit (.json)",
             key="kit_uploader",
-            label_visibility="collapsed",
         )
         if uploaded_kit is not None:
-            bk2.button(
-                "Ripristina Kit",
+            st.button(
+                "Ripristina da File",
                 type="primary",
                 use_container_width=True,
                 on_click=handle_restore_kit,
+            )
+
+        with st.expander("Copia / Incolla Brand Kit (ideale da smartphone)"):
+            st.caption("Copia il codice qui sotto per salvarlo nelle note, oppure incolla un kit esistente:")
+            st.code(kit_json_str, language="json")
+            st.text_area(
+                "Incolla qui il JSON del Brand Kit",
+                height=110,
+                key="kit_text_input",
+                placeholder='{"author": "...", "bg_color": "#18181B", ...}',
+            )
+            st.button(
+                "Ripristina da Testo Incollato",
+                use_container_width=True,
+                on_click=handle_restore_kit_text,
             )
 
         if "kit_status" in st.session_state:
@@ -822,6 +946,20 @@ with controls_container:
         line_spacing = s2.slider("Interlinea", 1.0, 1.6, step=0.02, key="line_spacing")
         bar_width = s3.slider("Bordo (px)", 0, 60, key="bar_width")
 
+        va1, va2 = st.columns(2)
+        vertical_align = va1.selectbox(
+            "Allineamento verticale testo",
+            ["Centrato", "In alto", "In basso"],
+            key="vertical_align",
+        )
+        vertical_offset = va2.slider(
+            "Spostamento fine (px)",
+            min_value=-250,
+            max_value=250,
+            step=5,
+            key="vertical_offset",
+        )
+
     (
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
         subject_file, subject_size, subject_circle, subject_side_by_side,
@@ -846,6 +984,8 @@ config = {
     "padding": padding,
     "line_spacing": line_spacing,
     "bar_width": bar_width,
+    "vertical_align": vertical_align,
+    "vertical_offset": vertical_offset,
     "bg_image": bg_image,
     "overlay_opacity": overlay_opacity,
     "bg_contrast": bg_contrast,
