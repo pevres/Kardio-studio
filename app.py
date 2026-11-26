@@ -16,17 +16,21 @@ st.set_page_config(
 
 
 # ==========================================
-# AUTENTICAZIONE CON PASSWORD
+# AUTENTICAZIONE CON PASSWORD (SOLO SECRETS)
 # ==========================================
 def check_password() -> bool:
-    """Mostra una schermata di login pulita prima di caricare lo studio grafico."""
+    """Mostra una schermata di login pulita leggendo la password esclusivamente da st.secrets."""
     if st.session_state.get("authenticated", False):
         return True
 
     try:
-        correct_password = st.secrets.get("APP_PASSWORD", os.environ.get("APP_PASSWORD", "kardio2026"))
+        correct_password = st.secrets.get("APP_PASSWORD") or os.environ.get("APP_PASSWORD")
     except Exception:
-        correct_password = os.environ.get("APP_PASSWORD", "kardio2026")
+        correct_password = os.environ.get("APP_PASSWORD")
+
+    if not correct_password:
+        st.error("Password non configurata. Imposta `APP_PASSWORD` nei Secrets di Streamlit.")
+        return False
 
     st.markdown("<div style='max-width: 420px; margin: 4rem auto 0 auto;'>", unsafe_allow_html=True)
     st.title("Kardio • Accesso")
