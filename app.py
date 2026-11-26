@@ -184,6 +184,24 @@ def apply_brand_kit(data: dict):
             st.session_state[key] = data[key]
 
 
+def handle_restore_kit():
+    uploaded_kit = st.session_state.get("kit_uploader")
+    if uploaded_kit is not None:
+        try:
+            uploaded_kit.seek(0)
+            kit_data = json.load(uploaded_kit)
+            apply_brand_kit(kit_data)
+            st.session_state["kit_status"] = ("success", "Brand Kit ripristinato correttamente.")
+        except Exception as e:
+            st.session_state["kit_status"] = ("error", f"File JSON non valido: {e}")
+
+
+def handle_apply_palette(bg_p: str, acc_p: str, txt_p: str):
+    st.session_state["bg_color"] = bg_p
+    st.session_state["accent_color"] = acc_p
+    st.session_state["text_color"] = txt_p
+
+
 def export_brand_kit_json() -> str:
     kit_keys = [
         "author",
@@ -616,12 +634,13 @@ def render_media_and_colors(t_media, t_colori):
             "Verde Natura": ("#064E3B", "#34D399", "#ECFDF5"),
             "Chiara Minimal": ("#F8FAFC", "#DC2626", "#0F172A"),
         }
-        if p_col2.button("Applica Palette", use_container_width=True):
-            bg_p, acc_p, txt_p = presets[palette]
-            st.session_state["bg_color"] = bg_p
-            st.session_state["accent_color"] = acc_p
-            st.session_state["text_color"] = txt_p
-            st.rerun()
+        bg_p, acc_p, txt_p = presets[palette]
+        p_col2.button(
+            "Applica Palette",
+            use_container_width=True,
+            on_click=handle_apply_palette,
+            args=(bg_p, acc_p, txt_p),
+        )
 
         c1, c2, c3 = st.columns(3)
         bg_color = c1.color_picker("Sfondo", key="bg_color")
@@ -640,15 +659,26 @@ def render_media_and_colors(t_media, t_colori):
             use_container_width=True,
         )
 
-        uploaded_kit = bk2.file_uploader("Carica Brand Kit (.json)", type=["json"], label_visibility="collapsed")
+        uploaded_kit = bk2.file_uploader(
+            "Carica Brand Kit (.json)",
+            type=["json"],
+            key="kit_uploader",
+            label_visibility="collapsed",
+        )
         if uploaded_kit is not None:
-            if bk2.button("Ripristina Kit", type="primary", use_container_width=True):
-                try:
-                    kit_data = json.load(uploaded_kit)
-                    apply_brand_kit(kit_data)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"File JSON non valido: {e}")
+            bk2.button(
+                "Ripristina Kit",
+                type="primary",
+                use_container_width=True,
+                on_click=handle_restore_kit,
+            )
+
+        if "kit_status" in st.session_state:
+            kind, msg = st.session_state.pop("kit_status")
+            if kind == "success":
+                st.success(msg)
+            else:
+                st.error(msg)
 
     return (
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
