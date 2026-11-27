@@ -183,13 +183,26 @@ DEFAULT_STATE = {
     "text_shadow": True,
     "logo_height": 95,
     "logo_position": "In basso a destra",
-    "subject_size": 240,
+    "subject_size": 220,
     "subject_gap": 28,
     "subject_border": 6,
+    "subject_zoom": 1.20,
+    "subject_crop_x": 0.50,
     "subject_crop_y": 0.35,
     "subject_circle": True,
     "subject_side_by_side": True,
+    "subject_layout": "Orizzontale",
+    "subject_arc_depth": 70,
     "subject_position": "Sopra i testi",
+    "s1_dx": 0,
+    "s1_dy": 0,
+    "s1_cy": 0.35,
+    "s2_dx": 0,
+    "s2_dy": 0,
+    "s2_cy": 0.35,
+    "s3_dx": 0,
+    "s3_dy": 0,
+    "s3_cy": 0.35,
     "bg_color": "#18181B",
     "accent_color": "#E11D48",
     "text_color": "#FAFAFA",
@@ -261,9 +274,13 @@ def export_brand_kit_json() -> str:
         "subject_size",
         "subject_gap",
         "subject_border",
+        "subject_zoom",
+        "subject_crop_x",
         "subject_crop_y",
         "subject_circle",
         "subject_side_by_side",
+        "subject_layout",
+        "subject_arc_depth",
         "subject_position",
         "bg_color",
         "accent_color",
@@ -498,26 +515,47 @@ def draw_highlighted_text(
     return y
 
 
-def draw_subject_row(
-    img: Image.Image,
-    draw: ImageDraw.ImageDraw,
+def compute_subjects_geometry(
     subjects: list[Image.Image],
-    row_y: int,
     box_x: int,
+    box_y: int,
     box_w: int,
     sw: int,
     gap: int,
     circle: bool,
-    border: int,
-    crop_y: float,
-    accent_color: str,
+    layout: str,
+    arc_depth: int,
     align: str,
-) -> int:
-    """Disegna da 1 a 3 foto soggetto affiancate e restituisce l'altezza occupata."""
+    indiv_offsets: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int, int, int]], int]:
+    """Calcola coordinate (x, y, w, h) per ciascuna foto e l'altezza complessiva del gruppo."""
     count = len(subjects)
     if count == 0:
-        return 0
+        return [], 0
 
+    item_sizes = []
+    for raw_s in subjects:
+        sh = sw if circle else int(raw_s.height * (sw / raw_s.width))
+        item_sizes.append((sw, sh))
+
+    positions = []
+
+    if layout == "Verticale":
+        total_h = sum(h for _, h in item_sizes) + (count - 1) * gap
+        cur_y = box_y
+        for idx, (iw, ih) in enumerate(item_sizes):
+            if align == "Centrato":
+                cx = box_x + max(0, (box_w - iw) // 2)
+            elif align == "Destra":
+                cx = box_x + max(0, box_w - iw)
+            else:
+                cx = box_x
+            dx, dy = indiv_offsets[idx]
+            positions.append((cx + dx, cur_y + dy, iw, ih))
+            cur_y += ih + gap
+        return positions, total_h
+
+    # Layout Orizzontale, Semicerchio (arco su / arco giù) o Libero
     total_w = count * sw + (count - 1) * gap
     if align == "Centrato":
         start_x = box_x + max(0, (box_w - total_w) // 2)
@@ -526,32 +564,62 @@ def draw_subject_row(
     else:
         start_x = box_x
 
-    max_h = 0
-    for idx, raw_s in enumerate(subjects):
+    max_bottom = box_y
+    for idx, (iw, ih) in enumerate(item_sizes):
         cx = start_x + idx * (sw + gap)
+        cy = box_y
+
+        if count >= 2:
+            if layout == "Semicerchio (arco superiore)":
+                # La foto centrale sale verso l'alto; le esterne scendono di arc_depth
+                is_center = (count == 3 and idx == 1)
+                if not is_center:
+                    cy += arc_depth
+            elif layout == "Semicerchio (arco inferiore)":
+                # La foto centrale scende verso il basso di arc_depth
+                is_center = (count == 3 and idx == 1) or (count == 2 and idx == 1)
+                if is_center:
+                    cy += arc_depth
+
+        dx, dy = indiv_offsets[idx]
+        fx, fy = cx + dx, cy + dy
+        positions.append((fx, fy, iw, ih))
+        max_bottom = max(max_bottom, fy + ih)
+
+    return positions, max(0, max_bottom - box_y)
+
+
+def draw_subjects_group(
+    img: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    subjects: list[Image.Image],
+    positions: list[tuple[int, int, int, int]],
+    circle: bool,
+    border: int,
+    zoom: float,
+    crop_x: float,
+    indiv_crop_y: list[float],
+    accent_color: str,
+):
+    for idx, (raw_s, (fx, fy, iw, ih)) in enumerate(zip(subjects, positions)):
+        cy_crop = indiv_crop_y[idx]
+        s_img = fit_cover(raw_s, iw, ih, offset_x=crop_x, offset_y=cy_crop, zoom=zoom)
         if circle:
-            s_img = fit_cover(raw_s, sw, sw, offset_x=0.5, offset_y=crop_y)
-            sh = sw
-            mask = Image.new("L", (sw, sw), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, sw, sw), fill=255)
+            mask = Image.new("L", (iw, ih), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, iw, ih), fill=255)
             if border > 0:
                 draw.ellipse(
-                    (cx - border, row_y - border, cx + sw + border, row_y + sw + border),
+                    (fx - border, fy - border, fx + iw + border, fy + ih + border),
                     fill=accent_color,
                 )
-            img.paste(s_img, (cx, row_y), mask)
+            img.paste(s_img, (fx, fy), mask)
         else:
-            sh = int(raw_s.height * (sw / raw_s.width))
-            s_img = raw_s.resize((sw, sh), Image.Resampling.LANCZOS)
             if border > 0:
                 draw.rectangle(
-                    [cx - border, row_y - border, cx + sw + border, row_y + sh + border],
+                    [fx - border, fy - border, fx + iw + border, fy + ih + border],
                     fill=accent_color,
                 )
-            img.paste(s_img, (cx, row_y), s_img)
-        max_h = max(max_h, sh)
-
-    return max_h
+            img.paste(s_img, (fx, fy), s_img)
 
 
 def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> Image.Image:
@@ -613,7 +681,7 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
 
     y = top_limit
 
-    # 4. CARICAMENTO FOTO SOGGETTO / RITRATTI (FINO A 3)
+    # 4. PARAMETRI FOTO SOGGETTO / RITRATTI (FINO A 3)
     subjects = []
     for f in (cfg.get("subject_files") or [])[:3]:
         opened = open_uploaded_image(f)
@@ -621,41 +689,68 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
             subjects.append(opened)
 
     content_max_w = W - (2 * pad)
-    subject_box = None
-    single_side_by_side = (
-        len(subjects) == 1
-        and cfg["subject_side_by_side"]
-        and not is_tall
-    )
+    subj_layout = cfg.get("subject_layout", "Orizzontale")
+    subj_pos = cfg.get("subject_position", "Sopra i testi")
 
     sw_scaled = int(cfg["subject_size"] * scale)
     gap_scaled = int(cfg.get("subject_gap", 28) * scale)
     border_scaled = int(cfg.get("subject_border", 6) * scale)
-    crop_y = cfg.get("subject_crop_y", 0.35)
-    subj_pos = cfg.get("subject_position", "Sopra i testi")
+    arc_scaled = int(cfg.get("subject_arc_depth", 70) * scale)
+    zoom_val = cfg.get("subject_zoom", 1.20)
+    crop_x_val = cfg.get("subject_crop_x", 0.50)
 
-    if len(subjects) > 1:
+    indiv_offsets = [
+        (int(cfg.get("s1_dx", 0) * scale), int(cfg.get("s1_dy", 0) * scale)),
+        (int(cfg.get("s2_dx", 0) * scale), int(cfg.get("s2_dy", 0) * scale)),
+        (int(cfg.get("s3_dx", 0) * scale), int(cfg.get("s3_dy", 0) * scale)),
+    ]
+    indiv_crop_y = [
+        cfg.get("s1_cy", cfg.get("subject_crop_y", 0.35)),
+        cfg.get("s2_cy", cfg.get("subject_crop_y", 0.35)),
+        cfg.get("s3_cy", cfg.get("subject_crop_y", 0.35)),
+    ]
+
+    # Adattamento automatico larghezza se in riga orizzontale/arco
+    if len(subjects) > 1 and subj_layout != "Verticale":
         max_fit_sw = (content_max_w - (len(subjects) - 1) * gap_scaled) // len(subjects)
         sw_scaled = max(60, min(sw_scaled, max_fit_sw))
 
-    if single_side_by_side:
-        draw_subject_row(
+    side_column_mode = (
+        len(subjects) >= 1
+        and cfg["subject_side_by_side"]
+        and not is_tall
+        and (len(subjects) == 1 or subj_layout == "Verticale")
+    )
+
+    subject_box = None
+    if side_column_mode:
+        side_x = pad if h_align == "Destra" else (W - pad - sw_scaled)
+        positions, col_h = compute_subjects_geometry(
+            subjects=subjects,
+            box_x=side_x,
+            box_y=y,
+            box_w=sw_scaled,
+            sw=sw_scaled,
+            gap=gap_scaled,
+            circle=cfg["subject_circle"],
+            layout="Verticale",
+            arc_depth=0,
+            align="Sinistra",
+            indiv_offsets=indiv_offsets,
+        )
+        draw_subjects_group(
             img=img,
             draw=draw,
             subjects=subjects,
-            row_y=y,
-            box_x=W - pad - sw_scaled,
-            box_w=sw_scaled,
-            sw=sw_scaled,
-            gap=0,
+            positions=positions,
             circle=cfg["subject_circle"],
             border=border_scaled,
-            crop_y=crop_y,
+            zoom=zoom_val,
+            crop_x=crop_x_val,
+            indiv_crop_y=indiv_crop_y,
             accent_color=cfg["accent_color"],
-            align="Destra",
         )
-        sh_est = sw_scaled if cfg["subject_circle"] else int(subjects[0].height * (sw_scaled / subjects[0].width))
-        subject_box = (W - pad - sw_scaled, y, W - pad, y + sh_est)
+        subject_box = (side_x, y, side_x + sw_scaled, y + col_h)
         content_max_w = W - (2 * pad) - sw_scaled - int(pad * 0.5)
 
     # 5. FONT CARICATI CON LE DIMENSIONI SCELTE
@@ -671,23 +766,30 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     f_sub = load_font(s_sub, bold=False)
     f_author = load_font(s_author, bold=True)
 
-    # 6. CALCOLO ALTEZZA BLOCCO (FOTO IN FILA + TESTI) E ALLINEAMENTO VERTICALE
+    # 6. CALCOLO ALTEZZA BLOCCO E ALLINEAMENTO VERTICALE
     footer_bottom_margin = int(H * 0.08) if is_tall else pad
     footer_y = H - footer_bottom_margin - max(
         s_author, logo_h_scaled if (logo_img and "basso" in cfg["logo_position"]) else 0
     )
     bottom_limit = footer_y - (48 if cfg["show_footer_line"] else 24)
 
-    subjects_row_h = 0
-    if subjects and not single_side_by_side:
-        if cfg["subject_circle"]:
-            subjects_row_h = sw_scaled
-        else:
-            subjects_row_h = max(int(s.height * (sw_scaled / s.width)) for s in subjects)
+    _, subjects_group_h = compute_subjects_geometry(
+        subjects=subjects if (subjects and not side_column_mode) else [],
+        box_x=pad,
+        box_y=0,
+        box_w=content_max_w,
+        sw=sw_scaled,
+        gap=gap_scaled,
+        circle=cfg["subject_circle"],
+        layout=subj_layout,
+        arc_depth=arc_scaled,
+        align=h_align,
+        indiv_offsets=indiv_offsets,
+    )
 
     block_h = 0
-    if subjects and not single_side_by_side and subj_pos == "Sopra i testi":
-        block_h += subjects_row_h + int(pad * 0.45)
+    if subjects and not side_column_mode and subj_pos == "Sopra i testi":
+        block_h += subjects_group_h + int(pad * 0.45)
 
     if cfg["kicker"]:
         block_h += int(s_kicker * 1.8)
@@ -698,11 +800,11 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
             draw, cfg["headline"], f_head, content_max_w, cfg["line_spacing"]
         ) + int(s_head * 0.5)
     if cfg["subtext"]:
-        sub_w_est = content_max_w if single_side_by_side else (W - 2 * pad)
+        sub_w_est = content_max_w if side_column_mode else (W - 2 * pad)
         block_h += measure_highlighted_text_height(draw, cfg["subtext"], f_sub, sub_w_est, 1.3)
 
-    if subjects and not single_side_by_side and subj_pos == "Sotto i testi":
-        block_h += int(pad * 0.45) + subjects_row_h
+    if subjects and not side_column_mode and subj_pos == "Sotto i testi":
+        block_h += int(pad * 0.45) + subjects_group_h
 
     v_align = cfg.get("vertical_align", "Centrato")
     available_h = max(0, bottom_limit - y)
@@ -716,23 +818,35 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     y = max(int(24 * scale), min(H - int(80 * scale), y))
 
     base_x = pad + int(cfg.get("horizontal_offset", 0) * scale)
+    if side_column_mode and h_align == "Destra":
+        base_x += sw_scaled + int(pad * 0.5)
 
-    # Disegno foto rotonde/ritratti se posizionate SOPRA i testi
-    if subjects and not single_side_by_side and subj_pos == "Sopra i testi":
-        drawn_h = draw_subject_row(
-            img=img,
-            draw=draw,
+    # Disegno foto se posizionate SOPRA i testi
+    if subjects and not side_column_mode and subj_pos == "Sopra i testi":
+        positions, drawn_h = compute_subjects_geometry(
             subjects=subjects,
-            row_y=y,
             box_x=base_x,
+            box_y=y,
             box_w=content_max_w,
             sw=sw_scaled,
             gap=gap_scaled,
             circle=cfg["subject_circle"],
-            border=border_scaled,
-            crop_y=crop_y,
-            accent_color=cfg["accent_color"],
+            layout=subj_layout,
+            arc_depth=arc_scaled,
             align=h_align,
+            indiv_offsets=indiv_offsets,
+        )
+        draw_subjects_group(
+            img=img,
+            draw=draw,
+            subjects=subjects,
+            positions=positions,
+            circle=cfg["subject_circle"],
+            border=border_scaled,
+            zoom=zoom_val,
+            crop_x=crop_x_val,
+            indiv_crop_y=indiv_crop_y,
+            accent_color=cfg["accent_color"],
         )
         y += drawn_h + int(pad * 0.45)
 
@@ -794,7 +908,7 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
     # 10. SOTTOTITOLO
     if cfg["subtext"]:
         sub_max_w = W - (2 * pad)
-        if subject_box and single_side_by_side and y < subject_box[3]:
+        if subject_box and side_column_mode and y < subject_box[3]:
             sub_max_w = content_max_w
 
         y = draw_highlighted_text(
@@ -812,23 +926,33 @@ def generate_card(cfg: dict, override_w: int = None, override_h: int = None) -> 
             shadow_offset=shadow_off,
         )
 
-    # Disegno foto rotonde/ritratti se posizionate SOTTO i testi
-    if subjects and not single_side_by_side and subj_pos == "Sotto i testi":
+    # Disegno foto se posizionate SOTTO i testi
+    if subjects and not side_column_mode and subj_pos == "Sotto i testi":
         y += int(pad * 0.45)
-        draw_subject_row(
-            img=img,
-            draw=draw,
+        positions, _ = compute_subjects_geometry(
             subjects=subjects,
-            row_y=y,
             box_x=base_x,
+            box_y=y,
             box_w=content_max_w,
             sw=sw_scaled,
             gap=gap_scaled,
             circle=cfg["subject_circle"],
-            border=border_scaled,
-            crop_y=crop_y,
-            accent_color=cfg["accent_color"],
+            layout=subj_layout,
+            arc_depth=arc_scaled,
             align=h_align,
+            indiv_offsets=indiv_offsets,
+        )
+        draw_subjects_group(
+            img=img,
+            draw=draw,
+            subjects=subjects,
+            positions=positions,
+            circle=cfg["subject_circle"],
+            border=border_scaled,
+            zoom=zoom_val,
+            crop_x=crop_x_val,
+            indiv_crop_y=indiv_crop_y,
+            accent_color=cfg["accent_color"],
         )
 
     # 11. FOOTER
@@ -902,6 +1026,13 @@ def auto_extract_from_press_release(raw_text: str):
         st.session_state["subtext"] = rest
 
 
+def sync_global_crop_y():
+    val = st.session_state["subject_crop_y"]
+    st.session_state["s1_cy"] = val
+    st.session_state["s2_cy"] = val
+    st.session_state["s3_cy"] = val
+
+
 # ==========================================
 # FUNZIONI DI RENDERING UI MODULARI
 # ==========================================
@@ -940,31 +1071,90 @@ def render_media_and_colors(t_media, t_colori):
                 if open_uploaded_image(f) is None:
                     st.error(f"Formato non supportato per {f.name}. Usa JPG, PNG o WEBP.")
 
+            ly1, ly2 = st.columns(2)
+            subject_layout = ly1.selectbox(
+                "Disposizione foto",
+                [
+                    "Orizzontale",
+                    "Verticale",
+                    "Semicerchio (arco superiore)",
+                    "Semicerchio (arco inferiore)",
+                ],
+                key="subject_layout",
+            )
+            if "Semicerchio" in subject_layout:
+                subject_arc_depth = ly2.slider(
+                    "Curvatura arco (px)", 20, 220, step=5, key="subject_arc_depth"
+                )
+            elif len(subject_files) == 1 or subject_layout == "Verticale":
+                subject_side_by_side = ly2.checkbox(
+                    "Affianca colonna al testo", key="subject_side_by_side"
+                )
+                subject_arc_depth = st.session_state["subject_arc_depth"]
+            else:
+                subject_arc_depth = st.session_state["subject_arc_depth"]
+
+            subject_side_by_side = st.session_state["subject_side_by_side"]
+
             sb1, sb2, sb3 = st.columns(3)
             subject_size = sb1.slider("Diametro / Dim. (px)", 100, 500, key="subject_size")
-            subject_gap = sb2.slider("Spazio tra foto (px)", 8, 80, key="subject_gap")
+            subject_gap = sb2.slider("Spazio tra foto (px)", 8, 90, key="subject_gap")
             subject_border = sb3.slider("Bordo cerchio (px)", 0, 18, key="subject_border")
 
-            sb4, sb5, sb6 = st.columns(3)
-            subject_circle = sb4.checkbox("Ritaglio circolare", key="subject_circle")
-            subject_crop_y = sb5.slider("Centratura volto (alto/basso)", 0.0, 1.0, step=0.05, key="subject_crop_y")
-            if len(subject_files) == 1:
-                subject_side_by_side = sb6.checkbox("Affianca al testo", key="subject_side_by_side")
-                subject_position = st.session_state["subject_position"]
-            else:
-                subject_side_by_side = False
-                subject_position = sb6.selectbox(
-                    "Posizione fila foto",
-                    ["Sopra i testi", "Sotto i testi"],
-                    key="subject_position",
-                )
+            zm1, zm2, zm3 = st.columns(3)
+            subject_zoom = zm1.slider(
+                "Zoom volto", 1.0, 2.5, step=0.05, key="subject_zoom"
+            )
+            subject_crop_y = zm2.slider(
+                "Centratura volto (alto/basso)",
+                0.0,
+                1.0,
+                step=0.05,
+                key="subject_crop_y",
+                on_change=sync_global_crop_y,
+            )
+            subject_crop_x = zm3.slider(
+                "Centratura volto (sx/dx)",
+                0.0,
+                1.0,
+                step=0.05,
+                key="subject_crop_x",
+            )
+
+            opt1, opt2 = st.columns(2)
+            subject_circle = opt1.checkbox("Ritaglio circolare", key="subject_circle")
+            subject_position = opt2.selectbox(
+                "Posizione rispetto ai testi",
+                ["Sopra i testi", "Sotto i testi"],
+                key="subject_position",
+            )
+
+            with st.expander("Posizione e inquadratura singola foto (1, 2, 3)"):
+                st.caption("Sposta ogni singola foto rispetto alla disposizione scelta o regola l'altezza del viso:")
+                for idx in range(len(subject_files)):
+                    num = idx + 1
+                    st.markdown(f"**Foto {num}**")
+                    c_dx, c_dy, c_cy = st.columns(3)
+                    c_dx.slider(
+                        f"Sposta X #{num} (px)", -400, 400, step=5, key=f"s{num}_dx"
+                    )
+                    c_dy.slider(
+                        f"Sposta Y #{num} (px)", -400, 400, step=5, key=f"s{num}_dy"
+                    )
+                    c_cy.slider(
+                        f"Viso alto/basso #{num}", 0.0, 1.0, step=0.05, key=f"s{num}_cy"
+                    )
         else:
             subject_size = st.session_state["subject_size"]
             subject_gap = st.session_state["subject_gap"]
             subject_border = st.session_state["subject_border"]
-            subject_circle = st.session_state["subject_circle"]
+            subject_zoom = st.session_state["subject_zoom"]
+            subject_crop_x = st.session_state["subject_crop_x"]
             subject_crop_y = st.session_state["subject_crop_y"]
+            subject_circle = st.session_state["subject_circle"]
             subject_side_by_side = st.session_state["subject_side_by_side"]
+            subject_layout = st.session_state["subject_layout"]
+            subject_arc_depth = st.session_state["subject_arc_depth"]
             subject_position = st.session_state["subject_position"]
 
         st.divider()
@@ -1076,8 +1266,9 @@ def render_media_and_colors(t_media, t_colori):
 
     return (
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
-        subject_files, subject_size, subject_gap, subject_border, subject_circle, subject_crop_y,
-        subject_side_by_side, subject_position,
+        subject_files, subject_size, subject_gap, subject_border, subject_zoom,
+        subject_crop_x, subject_crop_y, subject_circle,
+        subject_side_by_side, subject_layout, subject_arc_depth, subject_position,
         logo_file, logo_height, logo_position,
         bg_color, accent_color, text_color,
         show_footer_line, footer_line_width_pct, footer_line_thickness,
@@ -1250,8 +1441,9 @@ with controls_container:
 
     (
         bg_image, overlay_opacity, bg_contrast, bg_grayscale, bg_zoom, bg_offset_x, bg_offset_y,
-        subject_files, subject_size, subject_gap, subject_border, subject_circle, subject_crop_y,
-        subject_side_by_side, subject_position,
+        subject_files, subject_size, subject_gap, subject_border, subject_zoom,
+        subject_crop_x, subject_crop_y, subject_circle,
+        subject_side_by_side, subject_layout, subject_arc_depth, subject_position,
         logo_file, logo_height, logo_position,
         bg_color, accent_color, text_color,
         show_footer_line, footer_line_width_pct, footer_line_thickness,
@@ -1290,10 +1482,23 @@ config = {
     "subject_size": subject_size,
     "subject_gap": subject_gap,
     "subject_border": subject_border,
-    "subject_circle": subject_circle,
+    "subject_zoom": subject_zoom,
+    "subject_crop_x": subject_crop_x,
     "subject_crop_y": subject_crop_y,
+    "subject_circle": subject_circle,
     "subject_side_by_side": subject_side_by_side,
+    "subject_layout": subject_layout,
+    "subject_arc_depth": subject_arc_depth,
     "subject_position": subject_position,
+    "s1_dx": st.session_state["s1_dx"],
+    "s1_dy": st.session_state["s1_dy"],
+    "s1_cy": st.session_state["s1_cy"],
+    "s2_dx": st.session_state["s2_dx"],
+    "s2_dy": st.session_state["s2_dy"],
+    "s2_cy": st.session_state["s2_cy"],
+    "s3_dx": st.session_state["s3_dx"],
+    "s3_dy": st.session_state["s3_dy"],
+    "s3_cy": st.session_state["s3_cy"],
     "logo_file": logo_file,
     "logo_height": logo_height,
     "logo_position": logo_position,
